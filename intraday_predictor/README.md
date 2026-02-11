@@ -114,6 +114,40 @@ The prediction logic is the same as the 4 PM batch job (next trading day, same m
 
 ---
 
+## Database migration (local Docker → EC2)
+
+Export data from your local Docker Postgres and load it on EC2 when deploying.
+
+**1. Export (run locally from `intraday_predictor`):**
+
+```bash
+# Linux / macOS / WSL / Git Bash
+./scripts/export_db.sh
+```
+
+```powershell
+# Windows PowerShell
+.\scripts\export_db.ps1
+```
+
+This creates `backups/predictions_YYYYMMDD_HHMMSS.sql`. Copy this file to your EC2 instance (e.g. via SCP or S3).
+
+**2. Restore on EC2:**
+
+Ensure Postgres is running on EC2 (Docker or native). Set `.env` with `POSTGRES_HOST`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB` pointing to your EC2 database. Then:
+
+```bash
+# Restore latest dump from backups/
+./scripts/restore_db.sh
+
+# Or specify the dump file
+./scripts/restore_db.sh /path/to/predictions_20250210_143000.sql
+```
+
+If Postgres runs in Docker on EC2, set `POSTGRES_HOST=localhost` in `.env` and run the restore script from the project directory.
+
+---
+
 ## Database behaviour
 
 - **With PostgreSQL:** Set `POSTGRES_HOST` and `POSTGRES_PASSWORD` in `.env` and start the DB with `docker compose up -d`. The app will create tables on first run.
@@ -134,6 +168,11 @@ intraday_predictor/
 ├── why_generator.py     # Outcome explanations
 ├── email_notifier.py    # Email reports
 ├── docker-compose.yml   # PostgreSQL service
+├── scripts/
+│   ├── export_db.sh     # Export DB from local Docker (Linux/macOS)
+│   ├── export_db.ps1    # Export DB from local Docker (Windows)
+│   ├── restore_db.sh    # Restore DB (EC2 or local)
+│   └── restore_db.ps1   # Restore DB (Windows)
 ├── .env.example         # Env template
 ├── requirements.txt
 └── README.md
