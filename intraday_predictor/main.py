@@ -1,5 +1,5 @@
 import logging
-from datetime import date, timedelta
+from datetime import date
 
 import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -9,6 +9,7 @@ from database import init_db
 from email_notifier import send_analysis_email, send_prediction_email
 from performance_analyzer import analyze_predictions
 from prediction_engine import generate_predictions
+from trading_days import next_trading_day
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,22 +18,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 IST = pytz.timezone(TIMEZONE)
-
-
-def _next_trading_day(from_date: date) -> date:
-    """Return the next weekday (Mon-Fri) after from_date."""
-    nxt = from_date + timedelta(days=1)
-    while nxt.weekday() >= 5:  # Sat=5, Sun=6
-        nxt += timedelta(days=1)
-    return nxt
-
-
-def _prev_trading_day(from_date: date) -> date:
-    """Return the most recent weekday (Mon-Fri) before from_date."""
-    prev = from_date - timedelta(days=1)
-    while prev.weekday() >= 5:
-        prev -= timedelta(days=1)
-    return prev
 
 
 def daily_job():
@@ -51,7 +36,7 @@ def daily_job():
     send_analysis_email(results, analysis_date)
 
     # --- Module 1: Generate predictions for tomorrow ---
-    target_date = _next_trading_day(today)
+    target_date = next_trading_day(today)
     logger.info(f"Generating predictions for {target_date}")
     predictions = generate_predictions(target_date, prediction_date=today)
     send_prediction_email(predictions, target_date)

@@ -4,14 +4,9 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from config import (
-    ATR_MULTIPLIER,
-    NIFTY_200_TICKERS,
-    PREDICTION_COUNT,
-    RISK_REWARD_RATIO,
-)
+from config import NIFTY_200_TICKERS
 from data_fetcher import fetch_daily_ohlcv
-from database import insert_predictions
+from database import get_all_model_params, insert_predictions
 
 logger = logging.getLogger(__name__)
 
@@ -106,21 +101,27 @@ def _score_stock(df: pd.DataFrame) -> float | None:
     return score
 
 
-def _calculate_levels(df: pd.DataFrame) -> dict:
+def _calculate_levels(df: pd.DataFrame, atr_multiplier: float, risk_reward_ratio: float) -> dict:
     atr_series = _compute_atr(df)
     atr = float(atr_series.iloc[-1])
     latest_close = float(df["Close"].iloc[-1])
     high_20 = float(df["High"].tail(20).max())
 
     entry = round(max(high_20, latest_close + atr * 0.3), 2)
-    sl = round(entry - (ATR_MULTIPLIER * atr), 2)
+    sl = round(entry - (atr_multiplier * atr), 2)
     risk = entry - sl
-    target = round(entry + (RISK_REWARD_RATIO * risk), 2)
+    target = round(entry + (risk_reward_ratio * risk), 2)
 
     return {"entry": entry, "target": target, "sl": sl, "atr": round(atr, 2)}
 
 
 def generate_predictions(target_date: date, prediction_date: date) -> list[dict]:
+    params = get_all_model_params()
+    atr_mult = params["atr_multiplier"]
+    rr_ratio = params["risk_reward_ratio"]
+    score_threshold = params["score_threshold"]
+    prediction_count = int(params["prediction_count"])
+
     scored: list[tuple[str, float, pd.DataFrame]] = []
 
     for ticker in NIFTY_200_TICKERS:
@@ -129,17 +130,17 @@ def generate_predictions(target_date: date, prediction_date: date) -> list[dict]
             if df.empty:
                 continue
             s = _score_stock(df)
-            if s is not None and s > 4.0:
+            if s is not None and s > score_threshold:
                 scored.append((ticker, s, df))
         except Exception as e:
             logger.warning(f"Skipping {ticker}: {e}")
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    top = scored[:PREDICTION_COUNT]
+    top = scored[:prediction_count]
 
     predictions = []
     for ticker, score, df in top:
-        levels = _calculate_levels(df)
+        levels = _calculate_levels(df, atr_mult, rr_ratio)
         predictions.append(
             {
                 "prediction_date": prediction_date.isoformat(),

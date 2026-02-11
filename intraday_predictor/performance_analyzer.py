@@ -11,13 +11,16 @@ from datetime import date
 
 from data_fetcher import get_day_summary
 from database import (
+    get_all_model_params,
     get_predictions_for_date,
+    get_predictions_with_outcomes,
     get_recent_win_rate,
     insert_model_metrics,
+    set_model_param,
     update_prediction_outcome,
 )
 from why_generator import generate_reason
-from config import RETRAIN_ACCURACY_THRESHOLD
+from config import ATR_MULTIPLIER, RETRAIN_ACCURACY_THRESHOLD, RISK_REWARD_RATIO
 
 logger = logging.getLogger(__name__)
 
@@ -162,16 +165,91 @@ def _check_and_retrain(current_win_rate: float) -> bool:
     return False
 
 
+def _simulate_outcome(
+    entry: float,
+    sl: float,
+    target: float,
+    actual_high: float,
+    actual_low: float,
+    atr_mult_new: float,
+    rr_new: float,
+    atr_mult_used: float,
+) -> str:
+    """
+    Re-classify outcome using new ATR multiplier and risk-reward.
+    Back-derives ATR from (entry - sl) = atr_mult_used * atr, then applies new levels.
+    """
+    if actual_high < entry:
+        return "NO ENTRY"
+    atr_implied = (entry - sl) / atr_mult_used if atr_mult_used > 0 else 0
+    if atr_implied <= 0:
+        return "NO ENTRY"
+    sl_new = entry - (atr_mult_new * atr_implied)
+    risk_new = entry - sl_new
+    target_new = entry + (rr_new * risk_new)
+    if actual_low <= sl_new:
+        return "STOP LOSS HIT"
+    if actual_high >= target_new:
+        return "TARGET HIT"
+    return "STAGNANT"
+
+
 def _retrain_model():
     """
-    Placeholder for model retraining logic.
-
-    In a production system this would:
-      - Pull the last N days of labeled predictions from the DB
-      - Re-optimize technical indicator weights / thresholds
-      - Persist the updated model parameters
+    Retrain by re-optimizing ATR multiplier and risk-reward ratio using recent
+    predictions with outcomes. Simulates outcomes over a parameter grid and
+    persists the best-performing pair.
     """
+    rows = get_predictions_with_outcomes(limit=60)
+    if len(rows) < 10:
+        logger.warning(
+            "RETRAIN: Insufficient historical outcomes (%s). Need at least 10. Skipping.",
+            len(rows),
+        )
+        return
+
+    params = get_all_model_params()
+    atr_mult_used = params.get("atr_multiplier", ATR_MULTIPLIER)
+    rr_used = params.get("risk_reward_ratio", RISK_REWARD_RATIO)
+
+    atr_grid = [1.2, 1.35, 1.5, 1.65, 1.8, 2.0]
+    rr_grid = [1.5, 1.75, 2.0, 2.25, 2.5]
+
+    best_wr = -1.0
+    best_atr = atr_mult_used
+    best_rr = rr_used
+
+    for atr_mult_new in atr_grid:
+        for rr_new in rr_grid:
+            wins = 0
+            total = 0
+            for r in rows:
+                outcome = _simulate_outcome(
+                    entry=r["predicted_entry"],
+                    sl=r["predicted_sl"],
+                    target=r["predicted_target"],
+                    actual_high=r["actual_high"],
+                    actual_low=r["actual_low"],
+                    atr_mult_new=atr_mult_new,
+                    rr_new=rr_new,
+                    atr_mult_used=atr_mult_used,
+                )
+                if outcome == "TARGET HIT":
+                    wins += 1
+                total += 1
+            wr = wins / total if total else 0
+            if wr > best_wr:
+                best_wr = wr
+                best_atr = atr_mult_new
+                best_rr = rr_new
+
+    set_model_param("atr_multiplier", best_atr)
+    set_model_param("risk_reward_ratio", best_rr)
     logger.info(
-        "RETRAIN: Adjusting model parameters based on recent prediction failures. "
-        "This is a placeholder — plug in your ML pipeline here."
+        "RETRAIN: Updated model params — atr_multiplier=%.2f, risk_reward_ratio=%.2f "
+        "(simulated win rate %.1f%% on %s outcomes).",
+        best_atr,
+        best_rr,
+        best_wr * 100,
+        len(rows),
     )
